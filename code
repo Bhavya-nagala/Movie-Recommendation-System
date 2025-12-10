@@ -1,67 +1,50 @@
 pip install numpy pandas nltk scikit-learn
-
-import numpy as np
 import pandas as pd
-import ast
+from surprise import Dataset, Reader, SVD
+from surprise.model_selection import train_test_split
+from surprise import accuracy
 
-# Load the datasets
-credits = pd.read_csv('credits.csv')
-movies = pd.read_csv('movies.csv')
+# 1. Load ratings data
+ratings = pd.read_csv("ratings_small.csv")   # columns: userId, movieId, rating, timestamp
 
-# Merge datasets on movie title
-movies = movies.merge(credits, on='title')
-movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords', 'cast', 'crew']]
-movies.dropna(inplace=True)
+# 2. Load keywords data
+keywords = pd.read_csv("keywords.csv")       # columns: movieId, keywords
 
-# Convert genre, keywords, and cast information from JSON strings to lists
-def convert(text):
-return [i['name'] for i in ast.literal_eval(text)]
+# 3. Prepare Surprise dataset
+reader = Reader(rating_scale=(0.5, 5.0))
+data = Dataset.load_from_df(ratings[["userId", "movieId", "rating"]], reader)
 
-movies['genres'] = movies['genres'].apply(convert)
-movies['keywords'] = movies['keywords'].apply(convert)
-movies['cast'] = movies['cast'].apply(convert).apply(lambda x: x[0:3])
-movies['crew'] = movies['crew'].apply(lambda x: [i['name'] for i in ast.literal_eval(x) if i['job'] == 'Director'])
+# 4. Train-test split
+trainset, testset = train_test_split(data, test_size=0.2, random_state=42)
 
-# Collapse the lists to remove spaces for uniformity
-def collapse(L):
-return [i.replace(" ", "") for i in L]
+# 5. Train SVD model
+algo = SVD(n_factors=50, n_epochs=20, random_state=42)
+algo.fit(trainset)
 
-movies['cast'] = movies['cast'].apply(collapse)
-movies['crew'] = movies['crew'].apply(collapse)
-movies['genres'] = movies['genres'].apply(collapse)
-movies['keywords'] = movies['keywords'].apply(collapse)
+# 6. Evaluate
+predictions = algo.test(testset)
+accuracy.rmse(predictions)
 
-# Process the overview text
-movies['overview'] = movies['overview'].apply(lambda x: x.split())
-movies['tags'] = movies['overview'] + movies['genres'] + movies['keywords'] + movies['cast'] + movies['crew']
+# 7. Recommend top-N movies for a user
+def recommend_for_user(user_id, n=5):
+    # Get all movie IDs
+    all_movie_ids = ratings["movieId"].unique()
+    # Movies already rated by this user
+    rated = ratings.loc[ratings["userId"] == user_id, "movieId"].tolist()
+    # Candidate movies
+    candidates = [m for m in all_movie_ids if m not in rated]
+    
+    # Predict ratings
+    scored = [(m, algo.predict(user_id, m).est) for m in candidates]
+    scored = sorted(scored, key=lambda x: x[1], reverse=True)[:n]
+    
+    # Attach keywords for context
+    recs = pd.DataFrame(scored, columns=["movieId", "predicted_rating"])
+    recs = recs.merge(keywords, on="movieId", how="left")
+    return recs
 
-new = movies.drop(columns=['overview', 'genres', 'keywords', 'cast', 'crew'])
-new['tags'] = new['tags'].apply(lambda x: " ".join(x))
+# Example: Recommend for user 1
+print(recommend_for_user(user_id=1, n=5))
 
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from nltk.stem.porter import PorterStemmer
 
-cv = CountVectorizer(max_features=5000, stop_words='english')
-vector = cv.fit_transform(new['tags']).toarray()
 
-ps = PorterStemmer()
-
-def stem(text):
-return " ".join([ps.stem(word) for word in text.split()])
-
-new['tags'] = new['tags'].apply(stem)
-similarity = cosine_similarity(vector)
-
-def recommend(movie):
-index = new[new['title'] == movie].index[0]
-movie_list = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])
-recommendations = [new.iloc[i[0]].title for i in movie_list[1:6]]
-return recommendations
-
-print(recommend('Batman Begins'))
-
-import pickle
-
-pickle.dump(new, open('movie_list.pkl', 'wb'))
-pickle.dump(similarity, open('similarity.pkl', 'wb'))
