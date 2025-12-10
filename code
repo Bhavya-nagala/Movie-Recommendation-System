@@ -1,0 +1,67 @@
+pip install numpy pandas nltk scikit-learn
+
+import numpy as np
+import pandas as pd
+import ast
+
+# Load the datasets
+credits = pd.read_csv('credits.csv')
+movies = pd.read_csv('movies.csv')
+
+# Merge datasets on movie title
+movies = movies.merge(credits, on='title')
+movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords', 'cast', 'crew']]
+movies.dropna(inplace=True)
+
+# Convert genre, keywords, and cast information from JSON strings to lists
+def convert(text):
+return [i['name'] for i in ast.literal_eval(text)]
+
+movies['genres'] = movies['genres'].apply(convert)
+movies['keywords'] = movies['keywords'].apply(convert)
+movies['cast'] = movies['cast'].apply(convert).apply(lambda x: x[0:3])
+movies['crew'] = movies['crew'].apply(lambda x: [i['name'] for i in ast.literal_eval(x) if i['job'] == 'Director'])
+
+# Collapse the lists to remove spaces for uniformity
+def collapse(L):
+return [i.replace(" ", "") for i in L]
+
+movies['cast'] = movies['cast'].apply(collapse)
+movies['crew'] = movies['crew'].apply(collapse)
+movies['genres'] = movies['genres'].apply(collapse)
+movies['keywords'] = movies['keywords'].apply(collapse)
+
+# Process the overview text
+movies['overview'] = movies['overview'].apply(lambda x: x.split())
+movies['tags'] = movies['overview'] + movies['genres'] + movies['keywords'] + movies['cast'] + movies['crew']
+
+new = movies.drop(columns=['overview', 'genres', 'keywords', 'cast', 'crew'])
+new['tags'] = new['tags'].apply(lambda x: " ".join(x))
+
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from nltk.stem.porter import PorterStemmer
+
+cv = CountVectorizer(max_features=5000, stop_words='english')
+vector = cv.fit_transform(new['tags']).toarray()
+
+ps = PorterStemmer()
+
+def stem(text):
+return " ".join([ps.stem(word) for word in text.split()])
+
+new['tags'] = new['tags'].apply(stem)
+similarity = cosine_similarity(vector)
+
+def recommend(movie):
+index = new[new['title'] == movie].index[0]
+movie_list = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])
+recommendations = [new.iloc[i[0]].title for i in movie_list[1:6]]
+return recommendations
+
+print(recommend('Batman Begins'))
+
+import pickle
+
+pickle.dump(new, open('movie_list.pkl', 'wb'))
+pickle.dump(similarity, open('similarity.pkl', 'wb'))
